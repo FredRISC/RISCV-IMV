@@ -2,64 +2,183 @@
 
 module Top(
 input clk,
-input rst,
-output [31:0] test
+input rst
     );
+    
+    
 `include "riscv_ctrl_para.v"              
-//program counter and instruction
-wire [31:0] Instruction;
-wire [31:0] pc;
-//wire [`datawidth-1:0] pc_imm;
+`include "riscv_data_def.v"
 
-//Immediate
-wire signed [`datawidth-1:0] imm_out;
+/*Instantiate modules*/
 
-//Define control signals
-wire Branch, MemRead, MemtoReg, MemWrite, ALUSrc, RegWrite;
-wire [1:0] ALUOp;
-
-//Parsing instruction
-wire [4:0] rd;
-wire [4:0] rs1;
-wire [4:0] rs2;
-wire [2:0] funct3;
-wire [6:0] funct7;
-wire [6:0] opcode; //Decide instruction format
-assign funct3 = Instruction[14:12];
-assign funct7 = Instruction[31:25];
-assign rs1 = Instruction[19:15];
-assign rs2 = Instruction[24:20];
-assign rd = Instruction[11:7];
-assign opcode = Instruction[6:0]; 
-
-//register data
-wire [`datawidth-1:0] rdata1; 
-wire [`datawidth-1:0] rdata2;
-wire [`datawidth-1:0] wdata;
-//ALU
-wire [3:0] ALU_cmd;
-wire [4:0] ALU_Funct = {funct7[0],funct7[5], funct3}; //MSb is used to check if it's of M-extension
-wire IsMul;
-wire [`datawidth-1:0] ALU_a = rdata1;
-wire [`datawidth-1:0] ALU_b;
-wire [`datawidth-1:0] ALU_result;
-wire PC_branch;
-//data memory
-wire [`datawidth-1:0] rd_MemData;
-wire [`datawidth-1:0] wr_MemData = rdata2;
-wire [`DataMemorySize-3:0] MemAddr = ALU_result[`DataMemorySize-3:0];
-
-//Instantiate modules
-program_counter program_counter_inst(clk, rst, imm_out, PC_branch, pc);
+//IF stage 
+wire final_branch_verdict = EXMEM_Branch_o & EXMEM_PC_branch_o;
+program_counter program_counter_inst(clk, rst, PC_stall, EXMEM_PC_imm_o, final_branch_verdict, pc);
 InstMem InstMem_inst(pc, Instruction);
+
+//ID stage
+Instruction_parser Instruction_parser_inst(IFID_inst_o, funct3, funct7, rs1, rs2, rd, opcode); 
+assign Funct = {funct7[0],funct7[5], funct3}; //MSb is used to check if it's of M-extension
+
 Control_Unit Control_Unit_inst(.opcode(opcode), .Branch(Branch), .MemRead(MemRead), .MemtoReg(MemtoReg), .ALUOp(ALUOp), .MemWrite(MemWrite), .ALUSrc(ALUSrc), .RegWrite(RegWrite));
-Imm_gen Imm_gen_inst(.inst(Instruction), .imm_out(imm_out));
+Imm_gen Imm_gen_inst(.inst(IFID_inst_o), .imm_out(imm_out));
 Registerfile Registerfile_inst(.clk(clk), .rst(rst), .wdata(wdata), .rs1(rs1), .rs2(rs2), .rd(rd), .RegWrite(RegWrite), .rdata1(rdata1), .rdata2(rdata2));
-ALU_Control ALU_Control_inst(ALUOp,ALU_Funct,ALU_cmd,IsMul);
+
+//EX stage ALU modules
+ALU_Control ALU_Control_inst(IDEX_ALUOp_o,IDEX_Funct_o,ALU_cmd,IsMul);
+Mux3 Mux3_ins_OperandA(ForwardA,IDEX_rs1_o,wdata,EXMEM_ALU_result_o,ALU_a);
+Mux3 Mux3_ins_Operandb(ForwardB,IDEX_rs2_o,wdata,EXMEM_ALU_result_o,ALU_b_SRC0);
+Mux ALU_SRC_MUX(IDEX_ALUSrc_o,ALU_b_SRC0,IDEX_imm_data_o,ALU_b); 
 ALU ALU_inst(ALU_a,ALU_b,ALU_cmd,IsMul,ALU_result,PC_branch);
-Mux ALU_SRC_MUX(ALUSrc,rdata2,imm_out,ALU_b);
-DataMem DataMem_inst(clk,MemWrite,MemRead,funct3,MemAddr,wr_MemData,rd_MemData);
-Mux DataMem_MUX(MemtoReg,rd_MemData,ALU_result,wdata);
+
+
+//MEM stage Data Memory modules
+DataMem DataMem_inst(clk,EXMEM_MemWrite_o,EXMEM_MemRead_o,EXMEM_funct3_o,EXMEM_ALU_result_o,EXMEM_wr_MemData_o,rd_MemData);
+
+//WB stage write data Mux 
+Mux DataMem_MUX(MEMWB_MemtoReg_o,MEMWB_ALU_result_o,MEMWB_rd_MemData_o,wdata);
+
+
+//Stall unit & Load-Use hazard handler
+LoadUse_hazard LoadUse_hazard_inst( //LoadUse_hazard
+IDEX_MemRead_o,
+rs1, rs2, IDEX_rd_o,
+LoadUseHazard_o
+);
+
+stall stall_inst(
+LoadUseHazard_o,
+PC_stall,
+IFID_stall,
+IDEX_stall,
+EXMEM_bubble,
+EXMEM_stall,
+MEMWB_stall
+);
+//stall unit ends
+
+
+//IF-ID stage 
+
+IFID IFID_inst(
+clk,
+rst,
+IFID_stall,
+Instruction,
+pc,
+IFID_inst_o,
+IFID_pc_o
+);
+//IF-ID ends
+
+
+//ID-EX stage 
+IDEX IDEX_inst(
+clk,
+rst,
+IDEX_stall,
+IFID_pc_o,
+Branch,
+MemRead,
+MemtoReg,
+ALUOp,
+MemWrite,
+ALUSrc,
+RegWrite,
+rdata1,
+rdata2,
+imm_out,
+rs1,
+rs2,
+rd,
+Funct,
+LoadUseHazard,
+IDEX_PC_o,
+IDEX_Branch_o,
+IDEX_MemRead_o,
+IDEX_MemtoReg_o,
+IDEX_ALUOp_o,
+IDEX_MemWrite_o,
+IDEX_ALUSrc_o,
+IDEX_RegWrite_o,
+IDEX_rd_data1_o,
+IDEX_rd_data2_o,
+IDEX_imm_data_o,
+IDEX_rs1_o,
+IDEX_rs2_o,
+IDEX_rd_o,
+IDEX_Funct_o,
+LoadUseHazard_o
+);
+//ID-EX stage ends
+
+
+//EX-MEM stage
+assign EXMEM_funct3 = IDEX_Funct_o[2:0];
+EXMEM EXMEM_inst(
+clk,
+rst,
+EXMEM_stall,
+EXMEM_bubble,
+IDEX_Branch_o,
+IDEX_MemRead_o,
+IDEX_MemtoReg_o,
+IDEX_MemWrite_o,
+IDEX_RegWrite_o,
+IDEX_imm_data_o,
+IDEX_rd_o,
+ALU_result,
+ALU_b_SRC0,
+PC_branch,
+EXMEM_funct3,
+EXMEM_Branch_o,
+EXMEM_MemRead_o,
+EXMEM_MemtoReg_o,
+EXMEM_MemWrite_o,
+EXMEM_RegWrite_o,
+EXMEM_PC_imm_o,
+EXMEM_rd_o,
+EXMEM_ALU_result_o,
+EXMEM_wr_MemData_o,
+EXMEM_PC_branch_o,
+EXMEM_funct3_o
+);
+//EX-MEM stage ends
+
+
+//MEM-WB stage
+
+MEMWB MEMWB_inst(
+clk,
+rst,
+MEMWB_stall,
+EXMEM_MemtoReg_o,
+EXMEM_RegWrite_o,
+EXMEM_rd_o,
+rd_MemData,
+EXMEM_ALU_result_o,
+MEMWB_MemtoReg_o,
+MEMWB_RegWrite_o,
+MEMWB_rd_o,
+MEMWB_rd_MemData_o,
+MEMWB_ALU_result_o
+);
+//MEM-WB ends
+
+
+
+//Hazard Forwarding unit 
+
+Forwarding Forwarding_inst(
+IDEX_rs1, IDEX_rs2, 
+EXMEM_rd_o, 
+MEMWB_rd_o,
+EXMEM_RegWrite_o,
+MEMWB_RegWrite_o,
+ForwardA,
+ForwardB
+);
+
 
 endmodule
 
