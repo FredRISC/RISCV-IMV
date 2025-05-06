@@ -4,6 +4,7 @@
 `define InstMemorySize 2**20
 `define InstAddrWidth 20
 `define DataMemorySize 2**30
+`define DataAddrWidth 30
 
 `define ALU_OPERATION_ADD 4'b0000
 `define ALU_OPERATION_SUB 4'b0001

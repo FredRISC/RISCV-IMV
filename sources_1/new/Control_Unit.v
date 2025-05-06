@@ -19,7 +19,8 @@ localparam I_R_type = 7'b0110011;
 localparam I_load_type = 7'b0000011;
 localparam S_type = 7'b0100011;
 localparam B_type = 7'b1100011;
-
+localparam J_type = 7'b1101111;
+localparam J_I_type = 7'b1100111;
 
 always @(opcode) begin
 
